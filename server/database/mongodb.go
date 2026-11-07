@@ -10,24 +10,24 @@ import (
 )
 
 func Connect(uri string) (*mongo.Client, error) {
+	clientOptions := options.Client().
+		ApplyURI(uri).
+		SetServerSelectionTimeout(20 * time.Second).
+		SetConnectTimeout(15 * time.Second)
 
-	//created mongo client
-	client, err := mongo.Connect(
-		options.Client().ApplyURI(uri),
-	)
-
+	client, err := mongo.Connect(clientOptions)
 	if err != nil {
 		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
-		10*time.Second,
+		30*time.Second,
 	)
 	defer cancel()
-	//verify mongo conncetion
-	err = client.Ping(ctx, readpref.Primary())
 
+	// verify connection with the primary node
+	err = client.Ping(ctx, readpref.Primary())
 	if err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, err

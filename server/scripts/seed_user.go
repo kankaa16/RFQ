@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-func main() {
+func main1() {
 	cfg := config.LoadConfig()
 
 	if cfg.MongoURI == "" {

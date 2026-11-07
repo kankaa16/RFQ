@@ -50,13 +50,19 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
-	if request.MaterialRate <= 0 || request.ScrapRate < 0 ||
-		request.OverheadRate < 0 || request.MarginRate < 0 ||
-		request.MarginRate >= 100 || len(request.Volumes) == 0 ||
+	if request.MaterialRate <= 0 ||
+		request.ScrapRate < 0 ||
+		request.OverheadRate < 0 ||
+		request.OverheadRate > 100 ||
+		request.PackingCost < 0 ||
+		request.FreightCost < 0 ||
+		request.MarginRate < 0 ||
+		request.MarginRate >= 100 ||
+		len(request.Volumes) == 0 ||
 		len(request.Volumes) > 3 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "invalid rates, margin or volume scenarios",
+			"message": "invalid rates, costs, margin or volume scenarios",
 		})
 		return
 	}
@@ -71,14 +77,19 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(
+		c.Request.Context(),
+		15*time.Second,
+	)
 	defer cancel()
 
+	// fetch part
 	var part models.Part
 
-	err = s.PartCollection.FindOne(ctx, bson.M{
-		"_id": partID,
-	}).Decode(&part)
+	err = s.PartCollection.FindOne(
+		ctx,
+		bson.M{"_id": partID},
+	).Decode(&part)
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -96,41 +107,133 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
+	// fetch verified routing
 	var routing models.Routing
 
-	err = s.RoutingCollection.FindOne(ctx, bson.M{
-		"part_id":     partID,
-		"is_verified": true,
-	}).Decode(&routing)
+	err = s.RoutingCollection.FindOne(
+		ctx,
+		bson.M{
+			"part_id":     partID,
+			"is_verified": true,
+		},
+	).Decode(&routing)
 
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "verified routing not found for this part",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "verified routing not found for this part",
+			"message": "could not fetch routing",
 		})
 		return
 	}
 
-	// calculate machining cost per part
-	var machiningCost float64
-
-	for _, operation := range routing.Operations {
-		machiningCost += (operation.CycleTimeMinutes / 60) * operation.HourRate
+	if len(routing.Operations) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "routing has no operations",
+		})
+		return
 	}
 
-	// calculate material and scrap cost per part
+	// calculate machining and setup costs
+	var machiningCost float64
+	var setupCostPerPart float64
+
+	var rateSnapshots []models.RateSnapshot
+
+	seenRates := make(map[bson.ObjectID]bool)
+
+	for _, operation := range routing.Operations {
+		if operation.CycleTimeMinutes < 0 ||
+			operation.SetupTimeMinutes < 0 ||
+			operation.HourRate <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "routing contains invalid operation values",
+			})
+			return
+		}
+
+		if operation.SetupTimeMinutes > 0 && operation.BatchSize <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "batch size must be positive when setup time is specified",
+			})
+			return
+		}
+
+		// machine cost for producing one part
+		machiningCost +=
+			(operation.CycleTimeMinutes / 60) * operation.HourRate
+
+		// allocate setup cost across the operation's batch
+		if operation.SetupTimeMinutes > 0 {
+			setupCostPerPart +=
+				(operation.SetupTimeMinutes * operation.HourRate) /
+					(60 * float64(operation.BatchSize))
+		}
+
+		// fetch the machine rate master for traceability
+		if operation.RateMasterID != bson.NilObjectID &&
+			!seenRates[operation.RateMasterID] {
+
+			var rate models.RateMaster
+
+			err := s.RateCollection.FindOne(
+				ctx,
+				bson.M{"_id": operation.RateMasterID},
+			).Decode(&rate)
+
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": "could not fetch machine rate master",
+				})
+				return
+			}
+
+			rateSnapshots = append(rateSnapshots, models.RateSnapshot{
+				RateID:   rate.ID,
+				RateCode: rate.RateCode,
+				Version:  rate.Version,
+				Rate:     rate.Rate,
+				Unit:     rate.Unit,
+			})
+
+			seenRates[operation.RateMasterID] = true
+		}
+	}
+
+	// calculate material and scrap costs per part
 	materialCost := part.GrossWeight * request.MaterialRate
 	scrapCost := part.ScrapWeight * request.ScrapRate
 
-	// calculate cost scenarios
+	// calculate overhead on material, machining and setup
+	overheadCost := (materialCost +
+		machiningCost +
+		setupCostPerPart) * request.OverheadRate / 100
+
+	// calculate additional costs per part
+	otherCost := scrapCost +
+		request.PackingCost +
+		request.FreightCost
+
+	// calculate independent volume scenarios
 	var scenarios []models.VolumeScenario
 
 	for _, volume := range request.Volumes {
-		overheadCost := (materialCost + machiningCost) * request.OverheadRate / 100
-
-		otherCost := scrapCost + request.PackingCost + request.FreightCost
-
-		totalCost := materialCost + machiningCost + overheadCost + otherCost
+		totalCost := materialCost +
+			machiningCost +
+			setupCostPerPart +
+			overheadCost +
+			otherCost
 
 		sellingPrice := totalCost / (1 - request.MarginRate/100)
 
@@ -139,13 +242,14 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 			MaterialCost:  materialCost,
 			MachiningCost: machiningCost,
 			OverheadCost:  overheadCost,
-			OtherCost:     otherCost,
+			OtherCost:     setupCostPerPart + otherCost,
 			TotalCost:     totalCost,
 			MarginRate:    request.MarginRate,
 			SellingPrice:  sellingPrice,
 		})
 	}
 
+	// get logged-in user
 	userID, err := bson.ObjectIDFromHex(c.GetString("user_id"))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -155,21 +259,28 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
+	// get rfq id from part
+	rfqID := part.RFQID
+
 	now := time.Now()
 
 	costing := models.Costing{
 		PartID:         partID,
+		RFQID:          rfqID,
 		MaterialCost:   materialCost,
 		MachiningCost:  machiningCost,
 		ScrapCost:      scrapCost,
-		OverheadCost:   (materialCost + machiningCost) * request.OverheadRate / 100,
+		SetupCost:      setupCostPerPart,
+		OverheadCost:   overheadCost,
 		PackingCost:    request.PackingCost,
 		FreightCost:    request.FreightCost,
 		TotalCost:      scenarios[0].TotalCost,
 		MarginRate:     request.MarginRate,
 		SellingPrice:   scenarios[0].SellingPrice,
 		Scenarios:      scenarios,
-		FormulaVersion: "1.0",
+		RateSnapshots:  rateSnapshots,
+		FormulaVersion: "1.1",
+		Assumptions:    "material rate, scrap rate, overhead rate, packing cost and freight cost supplied in costing request; setup allocated using routing batch size",
 		PreparedBy:     userID,
 		CalculatedAt:   now,
 	}
@@ -190,8 +301,16 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		"success": true,
 		"message": "costing calculated successfully",
 		"data": gin.H{
-			"id":        result.InsertedID,
-			"scenarios": scenarios,
+			"id":             result.InsertedID,
+			"part_id":        partID,
+			"rfq_id":         rfqID,
+			"material_cost":  materialCost,
+			"machining_cost": machiningCost,
+			"setup_cost":     setupCostPerPart,
+			"overhead_cost":  overheadCost,
+			"scrap_cost":     scrapCost,
+			"rate_snapshots": rateSnapshots,
+			"scenarios":      scenarios,
 		},
 	})
 }

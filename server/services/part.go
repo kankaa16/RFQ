@@ -141,7 +141,7 @@ func (s *PartService) CreatePart(c *gin.Context) {
 }
 
 func (s *PartService) ListPartsByRFQ(c *gin.Context) {
-	rfqID, err := bson.ObjectIDFromHex(c.Param("rfq_id"))
+	rfqID, err := bson.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,

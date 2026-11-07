@@ -25,9 +25,9 @@ type RoutingOperation struct {
 
 	CycleTimeMinutes float64 `bson:"cycle_time_minutes" json:"cycle_time_minutes"`
 	SetupTimeMinutes float64 `bson:"setup_time_minutes" json:"setup_time_minutes"`
+	BatchSize        int64   `bson:"batch_size" json:"batch_size"`
 
-	HourRate float64 `bson:"hour_rate" json:"hour_rate"`
-
+	HourRate     float64       `bson:"hour_rate" json:"hour_rate"`
 	RateMasterID bson.ObjectID `bson:"rate_master_id,omitempty" json:"rate_master_id,omitempty"`
 }
 

@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-
 	// load configuration
 	cfg := config.LoadConfig()
 
@@ -47,6 +46,13 @@ func main() {
 
 	// select database
 	db := mongoClient.Database(cfg.MongoDatabase)
+
+	// create database indexes
+	if err := database.CreateIndexes(db); err != nil {
+		log.Fatal("database index creation failed: ", err)
+	}
+
+	log.Println("database indexes created successfully")
 
 	// initialize routes
 	router := routes.SetupRouter(db, cfg.JWTSecret)
