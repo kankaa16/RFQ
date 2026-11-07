@@ -1,0 +1,37 @@
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+client/node_modules/
+client/dist/
+
+# Go
+server/bin/
+server/*.exe
+server/*.out
+*.test
+
+# Uploaded files
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# IDE and editor
+.vscode/
+.idea/
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
+
+# Build outputs
+dist/
+build/
