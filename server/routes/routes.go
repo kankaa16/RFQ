@@ -140,6 +140,11 @@ func SetupRouter(db *mongo.Database, jwtSecret string) *gin.Engine {
 			protected.POST("/documents/upload", documentService.UploadDocument)
 
 			// historical quote routes
+			protected.POST(
+				"/historical-quotes/import",
+				historicalQuoteService.ImportHistoricalQuotes,
+			)
+
 			protected.GET(
 				"/historical-quotes",
 				historicalQuoteService.SearchHistoricalQuotes,

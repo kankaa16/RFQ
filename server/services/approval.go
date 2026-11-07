@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"rfq_costing/server/models"
@@ -42,6 +43,10 @@ func (s *ApprovalService) ReviewQuote(c *gin.Context) {
 		})
 		return
 	}
+
+	request.Action = strings.TrimSpace(request.Action)
+	request.Comments = strings.TrimSpace(request.Comments)
+	request.RejectionReason = strings.TrimSpace(request.RejectionReason)
 
 	if request.Action != models.ApprovalActionApproved &&
 		request.Action != models.ApprovalActionRejected {
@@ -99,8 +104,27 @@ func (s *ApprovalService) ReviewQuote(c *gin.Context) {
 	now := time.Now()
 
 	newStatus := models.QuoteStatusApproved
+
 	if request.Action == models.ApprovalActionRejected {
 		newStatus = models.QuoteStatusRejected
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"status":     newStatus,
+			"updated_at": now,
+		},
+	}
+
+	// only approved quotes receive approval details
+	if request.Action == models.ApprovalActionApproved {
+		update["$set"].(bson.M)["approved_by"] = reviewerID
+		update["$set"].(bson.M)["approved_at"] = now
+	} else {
+		update["$unset"] = bson.M{
+			"approved_by": "",
+			"approved_at": "",
+		}
 	}
 
 	result, err := s.QuoteCollection.UpdateOne(
@@ -109,14 +133,7 @@ func (s *ApprovalService) ReviewQuote(c *gin.Context) {
 			"_id":    quoteID,
 			"status": models.QuoteStatusPending,
 		},
-		bson.M{
-			"$set": bson.M{
-				"status":      newStatus,
-				"approved_by": reviewerID,
-				"approved_at": now,
-				"updated_at":  now,
-			},
-		},
+		update,
 	)
 
 	if err != nil {
@@ -153,7 +170,7 @@ func (s *ApprovalService) ReviewQuote(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "quote updated but approval history could not be saved",
+			"message": "quote status updated but approval history could not be saved",
 		})
 		return
 	}
