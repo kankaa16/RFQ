@@ -1,0 +1,45 @@
+server/main.go
+  h_7b7adfea337f46 50-55
+server/services/costing.go
+  h_7b7adfea337f46 56-59,65,82,86,91,110,118,122-137,140,145,147-149,151,154-172,175-211,214,218-221,223-226,228,232-236,245,252,262-263,269,273-274,281-283,305-312
+server/models/routing.go
+  h_7b7adfea337f46 28
+server/scripts/seed_data.go
+  h_7b7adfea337f46 1-325
+server/services/document.go
+  h_7b7adfea337f46 1-171
+server/database/indexes.go
+  h_7b7adfea337f46 1-100
+server/services/part.go
+  h_7b7adfea337f46 144
+server/services/routing.go
+  h_7b7adfea337f46 131
+server/services/ai_extraction.go
+  h_7b7adfea337f46 1-146
+server/scripts/seed_user.go
+  h_7b7adfea337f46 19
+server/services/pdf_quote.go
+  h_7b7adfea337f46 1-173
+server/database/mongodb.go
+  h_7b7adfea337f46 13-16,18,25,29-30
+server/services/quote.go
+  h_7b7adfea337f46 1-119,121-259
+server/services/approval.go
+  h_7b7adfea337f46 1-169
+server/routes/routes.go
+  h_7b7adfea337f46 16,22-79,106-127,129-132,134,136-151,153-156,158-160
+server/services/historical_quote.go
+  h_7b7adfea337f46 1-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "autter_version": "1.6.7",
+  "base_commit_sha": "79323f784986fff2d7d603e5a9c38077eb8e33cb",
+  "branch": "main",
+  "prompts": {},
+  "humans": {
+    "h_7b7adfea337f46": {
+      "author": "Kanka Oza <kankaoza1609@gmail.com>"
+    }
+  }
+}
