@@ -1,0 +1,21 @@
+server/services/historical_quote_import.go
+  h_7b7adfea337f46 1-300
+server/scripts/seed_sales_head/main.go
+  h_7b7adfea337f46 1-95
+server/services/approval.go
+  h_7b7adfea337f46 6,47-50,107,112-116,119-129,136,173
+server/routes/routes.go
+  h_7b7adfea337f46 143-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "autter_version": "1.6.7",
+  "base_commit_sha": "4c15475d2dd4979b04a736bc66ade257c845025f",
+  "branch": "main",
+  "prompts": {},
+  "humans": {
+    "h_7b7adfea337f46": {
+      "author": "Kanka Oza <kankaoza1609@gmail.com>"
+    }
+  }
+}
