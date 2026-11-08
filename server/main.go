@@ -25,6 +25,14 @@ func main() {
 		log.Fatal("MONGO_URI is missing from .env")
 	}
 
+	if cfg.GeminiAPIKey == "" {
+		log.Fatal("GEMINI_API_KEY is missing from .env")
+	}
+
+	if cfg.GeminiModel == "" {
+		log.Fatal("GEMINI_MODEL is missing from .env")
+	}
+
 	gin.SetMode(cfg.GinMode)
 
 	// connect to mongodb
@@ -34,7 +42,10 @@ func main() {
 	}
 
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
 		defer cancel()
 
 		if err := mongoClient.Disconnect(ctx); err != nil {
@@ -55,7 +66,12 @@ func main() {
 	log.Println("database indexes created successfully")
 
 	// initialize routes
-	router := routes.SetupRouter(db, cfg.JWTSecret)
+	router := routes.SetupRouter(
+		db,
+		cfg.JWTSecret,
+		cfg.GeminiAPIKey,
+		cfg.GeminiModel,
+	)
 
 	log.Printf("server working at http://localhost:%s", cfg.Port)
 

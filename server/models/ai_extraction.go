@@ -23,16 +23,25 @@ type AIExtraction struct {
 
 	ReviewedBy bson.ObjectID `bson:"reviewed_by,omitempty" json:"reviewed_by,omitempty"`
 	ReviewedAt *time.Time    `bson:"reviewed_at,omitempty" json:"reviewed_at,omitempty"`
+
+	CreatedRFQID bson.ObjectID `bson:"created_rfq_id,omitempty" json:"created_rfq_id,omitempty"`
+	ConvertedAt  *time.Time    `bson:"converted_at,omitempty" json:"converted_at,omitempty"`
 }
 
 type ExtractedField struct {
-	FieldName  string `bson:"field_name" json:"field_name"`
-	Value      string `bson:"value" json:"value"`
-	SourceText string `bson:"source_text" json:"source_text"`
+	FieldName string `bson:"field_name" json:"field_name"`
+
+	Value         string `bson:"value" json:"value"`
+	OriginalValue string `bson:"original_value" json:"original_value"`
+	ReviewedValue string `bson:"reviewed_value,omitempty" json:"reviewed_value,omitempty"`
+
+	SourceText     string `bson:"source_text" json:"source_text"`
+	SourceLocation string `bson:"source_location" json:"source_location"`
 
 	Confidence float64 `bson:"confidence" json:"confidence"`
 
-	IsAccepted bool `bson:"is_accepted" json:"is_accepted"`
+	ReviewStatus string `bson:"review_status" json:"review_status"`
+	IsAccepted   bool   `bson:"is_accepted" json:"is_accepted"`
 }
 
 const (
@@ -40,7 +49,13 @@ const (
 	AIStatusReviewed = "reviewed"
 	AIStatusFailed   = "failed"
 
+	AIFieldPending  = "pending"
+	AIFieldAccepted = "accepted"
+	AIFieldEdited   = "edited"
+	AIFieldRejected = "rejected"
+
 	AISourceEmail   = "email"
 	AISourceExcel   = "excel"
 	AISourceDrawing = "drawing"
+	AISourcePDF     = "pdf"
 )

@@ -10,7 +10,12 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-func SetupRouter(db *mongo.Database, jwtSecret string) *gin.Engine {
+func SetupRouter(
+	db *mongo.Database,
+	jwtSecret string,
+	geminiAPIKey string,
+	geminiModel string,
+) *gin.Engine {
 	router := gin.Default()
 
 	// initialize services
@@ -32,13 +37,12 @@ func SetupRouter(db *mongo.Database, jwtSecret string) *gin.Engine {
 		RFQCollection: db.Collection("rfqs"),
 	}
 
-	rateService := &services.RateMasterService{
+	rateMasterService := &services.RateMasterService{
 		Collection: db.Collection("rate_masters"),
 	}
 
 	routingService := &services.RoutingService{
-		Collection:     db.Collection("routings"),
-		PartCollection: db.Collection("parts"),
+		Collection: db.Collection("routings"),
 	}
 
 	costingService := &services.CostingService{
@@ -70,101 +74,117 @@ func SetupRouter(db *mongo.Database, jwtSecret string) *gin.Engine {
 	}
 
 	aiExtractionService := &services.AIExtractionService{
-		Collection: db.Collection("ai_extractions"),
+		Collection:         db.Collection("ai_extractions"),
+		DocumentCollection: db.Collection("documents"),
+		RFQCollection:      db.Collection("rfqs"),
+		CustomerCollection: db.Collection("customers"),
+		PartCollection:     db.Collection("parts"),
+	}
+
+	geminiExtractionService := &services.GeminiExtractionService{
+		DocumentCollection:   db.Collection("documents"),
+		ExtractionCollection: db.Collection("ai_extractions"),
+		Gemini: services.NewGeminiService(
+			geminiAPIKey,
+			geminiModel,
+		),
 	}
 
 	pdfQuoteService := &services.PDFQuoteService{
 		Collection: db.Collection("quotes"),
 	}
 
-	api := router.Group("/api")
-	{
-		api.GET("/health", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"message": "rfq costing api is running",
-			})
+	// public routes
+	router.GET("/api/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "rfq costing api is running",
 		})
+	})
 
-		api.POST("/auth/login", authService.Login)
+	router.POST("/api/auth/login", authService.Login)
 
-		protected := api.Group("/")
-		protected.Use(middleware.AuthMiddleware(jwtSecret))
+	// protected routes
+	protected := router.Group("/api")
+	protected.Use(middleware.AuthMiddleware(jwtSecret))
 
-		{
-			protected.GET("/profile", func(c *gin.Context) {
-				c.JSON(http.StatusOK, gin.H{
-					"success": true,
-					"data": gin.H{
-						"user_id": c.GetString("user_id"),
-						"email":   c.GetString("email"),
-						"role":    c.GetString("role"),
-					},
-				})
-			})
+	// profile
+	protected.GET("/profile", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"user_id": c.GetString("user_id"),
+				"email":   c.GetString("email"),
+				"role":    c.GetString("role"),
+			},
+		})
+	})
 
-			// rfq routes
-			protected.POST("/rfqs", rfqService.CreateRFQ)
-			protected.GET("/rfqs", rfqService.ListRFQs)
+	// customer routes
+	protected.POST("/customers", customerService.CreateCustomer)
+	protected.GET("/customers", customerService.ListCustomers)
 
-			// customer routes
-			protected.POST("/customers", customerService.CreateCustomer)
-			protected.GET("/customers", customerService.ListCustomers)
+	// rfq routes
+	protected.POST("/rfqs", rfqService.CreateRFQ)
+	protected.GET("/rfqs", rfqService.ListRFQs)
 
-			// part routes
-			protected.POST("/parts", partService.CreatePart)
-			protected.GET("/rfqs/:id/parts", partService.ListPartsByRFQ)
+	// part routes
+	protected.POST("/parts", partService.CreatePart)
+	protected.GET("/rfqs/:rfq_id/parts", partService.ListPartsByRFQ)
 
-			// rate master routes
-			protected.POST("/rates", rateService.CreateRate)
-			protected.GET("/rates", rateService.ListRates)
+	// rate routes
+	protected.POST("/rates", rateMasterService.CreateRate)
+	protected.GET("/rates", rateMasterService.ListRates)
 
-			// routing routes
-			protected.POST("/routings", routingService.SaveRouting)
-			protected.GET("/parts/:id/routing", routingService.GetRouting)
+	// routing routes
+	protected.POST("/parts/:part_id/routing", routingService.SaveRouting)
+	protected.GET("/parts/:part_id/routing", routingService.GetRouting)
 
-			// costing routes
-			protected.POST("/costings/calculate", costingService.CalculateCosting)
+	// costing routes
+	protected.POST("/costings/calculate", costingService.CalculateCosting)
 
-			// quote routes
-			protected.POST("/quotes", quoteService.CreateQuote)
+	// quote routes
+	protected.POST("/quotes", quoteService.CreateQuote)
 
-			// approval routes
-			protected.POST(
-				"/quotes/:id/review",
-				middleware.RequireRole("sales_head"),
-				approvalService.ReviewQuote,
-			)
+	// quote approval route
+	protected.POST("/quotes/:id/review", approvalService.ReviewQuote)
 
-			// document routes
-			protected.POST("/documents/upload", documentService.UploadDocument)
+	// pdf quote route
+	protected.GET("/quotes/:id/pdf", pdfQuoteService.GenerateQuotePDF)
 
-			// historical quote routes
-			protected.POST(
-				"/historical-quotes/import",
-				historicalQuoteService.ImportHistoricalQuotes,
-			)
+	// document routes
+	protected.POST("/documents/upload", documentService.UploadDocument)
 
-			protected.GET(
-				"/historical-quotes",
-				historicalQuoteService.SearchHistoricalQuotes,
-			)
+	// historical quote routes
+	protected.POST(
+		"/historical-quotes/import",
+		historicalQuoteService.ImportHistoricalQuotes,
+	)
+	protected.GET(
+		"/historical-quotes",
+		historicalQuoteService.SearchHistoricalQuotes,
+	)
 
-			// ai extraction routes
-			protected.GET(
-				"/ai-extractions/:document_id",
-				aiExtractionService.GetExtraction,
-			)
+	// ai extraction routes
+	protected.POST(
+		"/ai-extractions/:document_id/extract",
+		geminiExtractionService.ExtractDocument,
+	)
 
-			protected.POST(
-				"/ai-extractions/:id/review",
-				aiExtractionService.ReviewExtraction,
-			)
+	protected.GET(
+		"/ai-extractions/:document_id",
+		aiExtractionService.GetExtraction,
+	)
 
-			// pdf quotation route
-			protected.GET("/quotes/:id/pdf", pdfQuoteService.GenerateQuotePDF)
-		}
-	}
+	protected.POST(
+		"/extractions/:extraction_id/review",
+		aiExtractionService.ReviewExtraction,
+	)
+
+	protected.POST(
+		"/extractions/:extraction_id/convert",
+		aiExtractionService.ConvertToRFQ,
+	)
 
 	return router
 }

@@ -43,8 +43,21 @@ func (s *PartService) CreatePart(c *gin.Context) {
 		return
 	}
 
+	request.RFQID = strings.TrimSpace(request.RFQID)
 	request.PartNumber = strings.TrimSpace(request.PartNumber)
 	request.PartName = strings.TrimSpace(request.PartName)
+	request.MaterialGrade = strings.TrimSpace(request.MaterialGrade)
+	request.DrawingNumber = strings.TrimSpace(request.DrawingNumber)
+	request.DrawingRevision = strings.TrimSpace(request.DrawingRevision)
+	request.ManufacturingProcess = strings.TrimSpace(request.ManufacturingProcess)
+
+	if request.RFQID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "rfq id is required",
+		})
+		return
+	}
 
 	if request.PartNumber == "" || request.PartName == "" || request.MaterialGrade == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -54,11 +67,14 @@ func (s *PartService) CreatePart(c *gin.Context) {
 		return
 	}
 
-	if request.GrossWeight <= 0 || request.NetWeight <= 0 ||
-		request.NetWeight > request.GrossWeight || request.AnnualVolume <= 0 {
+	if request.GrossWeight <= 0 ||
+		request.NetWeight <= 0 ||
+		request.NetWeight > request.GrossWeight ||
+		request.AnnualVolume <= 0 ||
+		request.CustomerTargetPrice < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "invalid part weight or annual volume",
+			"message": "invalid part weight, annual volume or target price",
 		})
 		return
 	}
@@ -72,7 +88,7 @@ func (s *PartService) CreatePart(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	var rfq models.RFQ
@@ -141,7 +157,8 @@ func (s *PartService) CreatePart(c *gin.Context) {
 }
 
 func (s *PartService) ListPartsByRFQ(c *gin.Context) {
-	rfqID, err := bson.ObjectIDFromHex(c.Param("id"))
+	// read the parameter name used in the route: /rfqs/:rfq_id/parts
+	rfqID, err := bson.ObjectIDFromHex(c.Param("rfq_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -153,10 +170,30 @@ func (s *PartService) ListPartsByRFQ(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
+	// verify that the rfq exists
+	err = s.RFQCollection.FindOne(ctx, bson.M{
+		"_id": rfqID,
+	}).Err()
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "rfq not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "could not verify rfq",
+		})
+		return
+	}
+
 	cursor, err := s.Collection.Find(ctx, bson.M{
 		"rfq_id": rfqID,
 	})
-
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

@@ -13,6 +13,8 @@ type Config struct {
 	MongoURI      string
 	MongoDatabase string
 	JWTSecret     string
+	GeminiAPIKey  string
+	GeminiModel   string
 }
 
 func LoadConfig() Config {
@@ -27,6 +29,8 @@ func LoadConfig() Config {
 		MongoURI:      getEnv("MONGO_URI", ""),
 		MongoDatabase: getEnv("MONGO_DATABASE", "rfq_costing"),
 		JWTSecret:     getEnv("JWT_SECRET", ""),
+		GeminiAPIKey:  getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:   getEnv("GEMINI_MODEL", "gemini-3.8-flash"),
 	}
 }
 
