@@ -182,6 +182,9 @@ func (s *AIExtractionService) ConvertToRFQ(c *gin.Context) {
 		return
 	}
 
+	// normalize the extracted customer name
+	customerName = strings.Join(strings.Fields(customerName), " ")
+
 	customerPattern := "^" + regexp.QuoteMeta(customerName) + "$"
 
 	var customer models.Customer
@@ -194,15 +197,7 @@ func (s *AIExtractionService) ConvertToRFQ(c *gin.Context) {
 		"is_active": true,
 	}).Decode(&customer)
 
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "active customer not found; create the customer or correct the extracted name",
-			})
-			return
-		}
-
+	if err != nil && err != mongo.ErrNoDocuments {
 		log.Printf("customer lookup failed: %v", err)
 
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -210,6 +205,40 @@ func (s *AIExtractionService) ConvertToRFQ(c *gin.Context) {
 			"message": "could not find customer",
 		})
 		return
+	}
+
+	// automatically create the customer if it does not exist
+	if err == mongo.ErrNoDocuments {
+		customerNow := time.Now()
+
+		customer = models.Customer{
+			CompanyName:       customerName,
+			CustomerCode:      "CUST-" + bson.NewObjectID().Hex()[:8],
+			CustomerType:      models.CustomerTypeOther,
+			PreferredCurrency: "INR",
+			IsActive:          true,
+		}
+
+		customer.ID = bson.NewObjectID()
+		customer.CreatedAt = customerNow
+		customer.UpdatedAt = customerNow
+
+		_, err = s.CustomerCollection.InsertOne(ctx, customer)
+
+		if err != nil {
+			log.Printf("automatic customer creation failed: %v", err)
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "could not create customer automatically",
+			})
+			return
+		}
+
+		log.Printf("automatically created customer: %s (%s)",
+			customer.CompanyName,
+			customer.CustomerCode,
+		)
 	}
 
 	now := time.Now()

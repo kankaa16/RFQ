@@ -5,9 +5,12 @@ import {
   RefreshCw,
   Info,
   FileText,
-  CheckCircle2
+  CheckCircle2,
+  Plus,
+  Trash2,
+  Settings2
 } from "lucide-react";
-import { api } from "../services/api.js";
+import { api, apiRequest } from "../services/api.js";
 
 function getId(value) {
   if (!value) return "";
@@ -25,6 +28,18 @@ function formatCurrency(value) {
   }).format(Number(value || 0));
 }
 
+function newOperation() {
+  return {
+    name: "",
+    machine_type: "",
+    cycle_time_minutes: "",
+    setup_time_minutes: 0,
+    batch_size: 1000,
+    hour_rate: "",
+    rate_master_id: ""
+  };
+}
+
 export default function Costing({ rfqs, onLoadParts, onCalculate }) {
   const [rfqId, setRfqId] = React.useState("");
   const [parts, setParts] = React.useState([]);
@@ -39,6 +54,11 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
     margin_rate: 15,
     volumes: "180000,90000,45000"
   });
+
+  const [routingOperations, setRoutingOperations] = React.useState([]);
+  const [routingVerified, setRoutingVerified] = React.useState(false);
+  const [routingLoading, setRoutingLoading] = React.useState(false);
+  const [routingSaving, setRoutingSaving] = React.useState(false);
 
   const [gstPercent, setGstPercent] = React.useState(18);
   const [result, setResult] = React.useState(null);
@@ -60,10 +80,61 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
   const costingData = result?.data || result;
   const scenarios = costingData?.scenarios || [];
 
+  async function loadRouting(id) {
+    setRoutingLoading(true);
+    setRoutingVerified(false);
+    setRoutingOperations([]);
+
+    try {
+      const response = await apiRequest(
+        `/api/parts/${id}/routing`
+      );
+
+      const routing =
+        response.data?.routing ||
+        response.data ||
+        response.routing ||
+        response;
+
+      const operations = routing.operations || [];
+
+      setRoutingOperations(
+        operations.length
+          ? operations.map((operation) => ({
+              name: operation.name || "",
+              machine_type: operation.machine_type || "",
+              cycle_time_minutes: operation.cycle_time_minutes ?? "",
+              setup_time_minutes: operation.setup_time_minutes ?? 0,
+              batch_size: operation.batch_size ?? 1000,
+              hour_rate: operation.hour_rate ?? "",
+              rate_master_id: getId(operation.rate_master_id)
+            }))
+          : [newOperation()]
+      );
+
+      setRoutingVerified(Boolean(routing.is_verified));
+    } catch (e) {
+      if (
+        e.message?.toLowerCase().includes("not found") ||
+        e.message?.toLowerCase().includes("no documents")
+      ) {
+        setRoutingOperations([newOperation()]);
+        setRoutingVerified(false);
+      } else {
+        setError(`Could not load routing: ${e.message}`);
+        setRoutingOperations([newOperation()]);
+      }
+    } finally {
+      setRoutingLoading(false);
+    }
+  }
+
   async function chooseRFQ(id) {
     setRfqId(id);
     setPartId("");
     setParts([]);
+    setRoutingOperations([]);
+    setRoutingVerified(false);
     setResult(null);
     setQuote(null);
     setError("");
@@ -76,6 +147,153 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
       setParts(loadedParts);
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  async function choosePart(id) {
+    setPartId(id);
+    setResult(null);
+    setQuote(null);
+    setError("");
+    setSuccess("");
+    setRoutingVerified(false);
+    setRoutingOperations([]);
+
+    if (id) {
+      await loadRouting(id);
+    }
+  }
+
+  function updateOperation(index, field, value) {
+    setRoutingOperations((current) =>
+      current.map((operation, i) =>
+        i === index
+          ? { ...operation, [field]: value }
+          : operation
+      )
+    );
+
+    setRoutingVerified(false);
+    setResult(null);
+    setQuote(null);
+  }
+
+  function addOperation() {
+    setRoutingOperations((current) => [
+      ...current,
+      newOperation()
+    ]);
+    setRoutingVerified(false);
+    setResult(null);
+  }
+
+  function removeOperation(index) {
+    setRoutingOperations((current) =>
+      current.filter((_, i) => i !== index)
+    );
+    setRoutingVerified(false);
+    setResult(null);
+  }
+
+  function validateRouting() {
+    if (!routingOperations.length) {
+      throw new Error("Add at least one manufacturing operation.");
+    }
+
+    for (let i = 0; i < routingOperations.length; i++) {
+      const operation = routingOperations[i];
+
+      if (!operation.name.trim()) {
+        throw new Error(`Enter the name for operation ${i + 1}.`);
+      }
+
+      if (!operation.machine_type.trim()) {
+        throw new Error(`Enter the machine type for operation ${i + 1}.`);
+      }
+
+      if (
+        Number(operation.cycle_time_minutes) <= 0 ||
+        !Number.isFinite(Number(operation.cycle_time_minutes))
+      ) {
+        throw new Error(`Enter a valid cycle time for operation ${i + 1}.`);
+      }
+
+      if (
+        Number(operation.setup_time_minutes) < 0 ||
+        !Number.isFinite(Number(operation.setup_time_minutes))
+      ) {
+        throw new Error(`Enter a valid setup time for operation ${i + 1}.`);
+      }
+
+      if (
+        Number(operation.batch_size) <= 0 ||
+        !Number.isInteger(Number(operation.batch_size))
+      ) {
+        throw new Error(`Enter a valid batch size for operation ${i + 1}.`);
+      }
+
+      if (
+        Number(operation.hour_rate) <= 0 ||
+        !Number.isFinite(Number(operation.hour_rate))
+      ) {
+        throw new Error(`Enter a valid hourly rate for operation ${i + 1}.`);
+      }
+    }
+  }
+
+  async function saveRouting() {
+    if (!partId) {
+      throw new Error("Select a part first.");
+    }
+
+    if (routingVerified) return;
+
+    validateRouting();
+
+    setRoutingSaving(true);
+
+    try {
+      const operations = routingOperations.map((operation, index) => ({
+        sequence: index + 1,
+        name: operation.name.trim(),
+        machine_type: operation.machine_type.trim(),
+        cycle_time_minutes: Number(operation.cycle_time_minutes),
+        setup_time_minutes: Number(operation.setup_time_minutes),
+        batch_size: Number(operation.batch_size),
+        hour_rate: Number(operation.hour_rate),
+        ...(operation.rate_master_id
+          ? { rate_master_id: operation.rate_master_id }
+          : {})
+      }));
+
+      const response = await apiRequest(
+        `/api/parts/${partId}/routing`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            part_id: partId,
+            source: "manual",
+            operations
+          })
+        }
+      );
+
+      const savedRouting =
+        response.data?.routing ||
+        response.data ||
+        response;
+
+      if (
+        savedRouting.is_verified === false ||
+        response.success === false
+      ) {
+        throw new Error("Backend did not verify the saved routing.");
+      }
+
+      setRoutingVerified(true);
+      setSuccess("Manufacturing routing saved and verified.");
+    } finally {
+      setRoutingSaving(false);
     }
   }
 
@@ -98,6 +316,15 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
         throw new Error("Enter between 1 and 3 valid annual volumes.");
       }
 
+      if (!partId) {
+        throw new Error("Select a part first.");
+      }
+
+      // save and verify routing before calculating
+      if (!routingVerified) {
+        await saveRouting();
+      }
+
       const payload = {
         part_id: partId,
         material_rate: Number(form.material_rate),
@@ -111,6 +338,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
       const response = await onCalculate(payload);
       setResult(response);
+      setSuccess("Costing calculated successfully.");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -161,9 +389,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
       const createdQuote = response.data || response;
 
       setQuote(createdQuote);
-      setSuccess(
-        response.message || "Quote created successfully."
-      );
+      setSuccess(response.message || "Quote created successfully.");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -222,13 +448,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
           <label>Part</label>
           <select
             value={partId}
-            onChange={(e) => {
-              setPartId(e.target.value);
-              setResult(null);
-              setQuote(null);
-              setError("");
-              setSuccess("");
-            }}
+            onChange={(e) => choosePart(e.target.value)}
             required
             disabled={!parts.length}
           >
@@ -251,6 +471,196 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
                 {selectedPart.gross_weight} kg gross weight
               </span>
             </div>
+          )}
+
+          <div className="form-divider" />
+
+          <div className="panel-heading">
+            <div>
+              <h2>Manufacturing routing</h2>
+              <p>
+                Define the operations required to manufacture this part.
+              </p>
+            </div>
+            <Settings2 size={19} />
+          </div>
+
+          {routingLoading ? (
+            <div className="inline-info">
+              Loading routing...
+            </div>
+          ) : (
+            <>
+              {routingVerified && (
+                <div className="inline-info">
+                  <CheckCircle2 size={15} />
+                  Verified routing is available for this part.
+                </div>
+              )}
+
+              {!routingVerified && (
+                <div className="inline-info">
+                  <Info size={15} />
+                  Enter the actual manufacturing operations and machine
+                  rates. Routing must be verified before costing.
+                </div>
+              )}
+
+              {routingOperations.map((operation, index) => (
+                <div
+                  className="selected-part"
+                  key={index}
+                  style={{ marginBottom: 14 }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 12
+                    }}
+                  >
+                    <strong>Operation {index + 1}</strong>
+
+                    {!routingVerified && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => removeOperation(index)}
+                        disabled={routingOperations.length === 1}
+                        title="Remove operation"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="input-grid">
+                    <div>
+                      <label>Operation name</label>
+                      <input
+                        value={operation.name}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(index, "name", e.target.value)
+                        }
+                        placeholder="CNC Turning"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Machine type</label>
+                      <input
+                        value={operation.machine_type}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(index, "machine_type", e.target.value)
+                        }
+                        placeholder="CNC Lathe"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Cycle time (minutes)</label>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={operation.cycle_time_minutes}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(
+                            index,
+                            "cycle_time_minutes",
+                            e.target.value
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <label>Setup time (minutes)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={operation.setup_time_minutes}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(
+                            index,
+                            "setup_time_minutes",
+                            e.target.value
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <label>Batch size</label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={operation.batch_size}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(index, "batch_size", e.target.value)
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <label>Machine rate (₹ / hour)</label>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={operation.hour_rate}
+                        disabled={routingVerified}
+                        onChange={(e) =>
+                          updateOperation(index, "hour_rate", e.target.value)
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {!routingVerified && (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={addOperation}
+                    disabled={!partId || routingLoading || routingSaving}
+                  >
+                    <Plus size={15} /> Add operation
+                  </button>
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={async () => {
+                      setError("");
+                      setSuccess("");
+                      try {
+                        await saveRouting();
+                      } catch (e) {
+                        setError(e.message);
+                      }
+                    }}
+                    disabled={
+                      !partId ||
+                      routingSaving ||
+                      routingLoading
+                    }
+                  >
+                    {routingSaving ? "Saving..." : "Save & verify routing"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           <div className="form-divider" />
@@ -370,7 +780,12 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
           <button
             className="primary-button full-button"
-            disabled={loading || !partId}
+            disabled={
+              loading ||
+              routingLoading ||
+              routingSaving ||
+              !partId
+            }
             type="submit"
           >
             {loading ? "Calculating..." : (
@@ -397,7 +812,8 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
               </span>
               <strong>Your costing results will appear here.</strong>
               <span>
-                Select a part and enter its cost inputs to get started.
+                Select a part, configure its routing and enter cost inputs
+                to get started.
               </span>
             </div>
           ) : (

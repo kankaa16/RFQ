@@ -142,18 +142,18 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
-	// calculate machining and setup costs
+	now := time.Now().UTC()
+
 	var machiningCost float64
 	var setupCostPerPart float64
-
 	var rateSnapshots []models.RateSnapshot
 
 	seenRates := make(map[bson.ObjectID]bool)
 
+	// calculate machining and setup costs using rate masters
 	for _, operation := range routing.Operations {
-		if operation.CycleTimeMinutes < 0 ||
-			operation.SetupTimeMinutes < 0 ||
-			operation.HourRate <= 0 {
+		if operation.CycleTimeMinutes <= 0 ||
+			operation.SetupTimeMinutes < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"message": "routing contains invalid operation values",
@@ -169,36 +169,69 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 			return
 		}
 
-		// machine cost for producing one part
-		machiningCost +=
-			(operation.CycleTimeMinutes / 60) * operation.HourRate
-
-		// allocate setup cost across the operation's batch
-		if operation.SetupTimeMinutes > 0 {
-			setupCostPerPart +=
-				(operation.SetupTimeMinutes * operation.HourRate) /
-					(60 * float64(operation.BatchSize))
+		if operation.RateMasterID == bson.NilObjectID {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "rate master is missing for operation: " + operation.Name,
+			})
+			return
 		}
 
-		// fetch the machine rate master for traceability
-		if operation.RateMasterID != bson.NilObjectID &&
-			!seenRates[operation.RateMasterID] {
+		var rate models.RateMaster
 
-			var rate models.RateMaster
+		err := s.RateCollection.FindOne(
+			ctx,
+			bson.M{"_id": operation.RateMasterID},
+		).Decode(&rate)
 
-			err := s.RateCollection.FindOne(
-				ctx,
-				bson.M{"_id": operation.RateMasterID},
-			).Decode(&rate)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				c.JSON(http.StatusBadRequest, gin.H{
 					"success": false,
-					"message": "could not fetch machine rate master",
+					"message": "rate master not found for operation: " + operation.Name,
 				})
 				return
 			}
 
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "could not fetch machine rate master",
+			})
+			return
+		}
+
+		if rate.RateType != models.RateTypeMachine || rate.Rate <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "invalid machine rate master for operation: " + operation.Name,
+			})
+			return
+		}
+
+		// allow a rate only within its effective date range
+		if rate.EffectiveFrom.After(now) ||
+			(!rate.EffectiveTo.IsZero() && !now.Before(rate.EffectiveTo)) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "machine rate is not effective today: " + rate.RateCode,
+			})
+			return
+		}
+
+		// use the rate master value, not the routing's stored hourly rate
+		hourRate := rate.Rate
+
+		machiningCost +=
+			(operation.CycleTimeMinutes / 60) * hourRate
+
+		if operation.SetupTimeMinutes > 0 {
+			setupCostPerPart +=
+				(operation.SetupTimeMinutes * hourRate) /
+					(60 * float64(operation.BatchSize))
+		}
+
+		// save each distinct rate version once
+		if !seenRates[operation.RateMasterID] {
 			rateSnapshots = append(rateSnapshots, models.RateSnapshot{
 				RateID:   rate.ID,
 				RateCode: rate.RateCode,
@@ -259,10 +292,7 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
-	// get rfq id from part
 	rfqID := part.RFQID
-
-	now := time.Now()
 
 	costing := models.Costing{
 		PartID:         partID,
@@ -279,8 +309,8 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		SellingPrice:   scenarios[0].SellingPrice,
 		Scenarios:      scenarios,
 		RateSnapshots:  rateSnapshots,
-		FormulaVersion: "1.1",
-		Assumptions:    "material rate, scrap rate, overhead rate, packing cost and freight cost supplied in costing request; setup allocated using routing batch size",
+		FormulaVersion: "1.2",
+		Assumptions:    "machine hourly rates fetched from effective rate master versions; material rate, scrap rate, overhead rate, packing cost and freight cost supplied in costing request; setup allocated using routing batch size",
 		PreparedBy:     userID,
 		CalculatedAt:   now,
 	}

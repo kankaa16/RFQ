@@ -156,6 +156,7 @@ func SetupRouter(
 	// rate routes
 	protected.POST("/rates", rateMasterService.CreateRate)
 	protected.GET("/rates", rateMasterService.ListRates)
+	protected.GET("/rates/:rate_code/history", rateMasterService.GetRateHistory)
 
 	// routing routes
 	protected.POST("/parts/:part_id/routing", routingService.SaveRouting)
