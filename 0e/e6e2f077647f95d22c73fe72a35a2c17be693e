@@ -1,0 +1,31 @@
+server/models/ai_extraction.go
+  h_7b7adfea337f46 26-28,34-39,43,52-55,60
+server/services/gemini.go
+  h_7b7adfea337f46 1-364
+server/config/config.go
+  h_7b7adfea337f46 16-17,32-33
+server/routes/routes.go
+  h_7b7adfea337f46 13-18,40,45,77-82,84-90,97-101,103-177,179-187
+server/main.go
+  h_7b7adfea337f46 28-35,47,71-73
+server/services/extraction_conversion.go
+  h_7b7adfea337f46 1-515
+server/services/gemini_extraction.go
+  h_7b7adfea337f46 1-257
+server/services/ai_extraction.go
+  h_7b7adfea337f46 5,7,19-22,35-43,47-61,63-71,87-88,102-107,109,113,122-130,136,141-149,159-169,171,176-182,184-189,192-197,200-206,208-218,220,225,227-228,231-307,310-320,326-343,346-351,354,359-360,368-371,379-382
+server/services/part.go
+  h_7b7adfea337f46 46,49-60,73-74,77,91,160-161,173-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "autter_version": "1.6.7",
+  "base_commit_sha": "0ee6e2f077647f95d22c73fe72a35a2c17be693e",
+  "branch": "main",
+  "prompts": {},
+  "humans": {
+    "h_7b7adfea337f46": {
+      "author": "Kanka Oza <kankaoza1609@gmail.com>"
+    }
+  }
+}
