@@ -24,10 +24,12 @@ type GeminiExtractionService struct {
 }
 
 func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
-	if s.Gemini == nil {
+	if s.Gemini == nil ||
+		s.DocumentCollection == nil ||
+		s.ExtractionCollection == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "gemini service is not configured",
+			"message": "extraction service is not configured",
 		})
 		return
 	}
@@ -86,7 +88,7 @@ func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
 		return
 	}
 
-	// prevent duplicate extraction records before calling gemini
+	// Return an existing extraction instead of creating a duplicate.
 	var existing models.AIExtraction
 
 	err = s.ExtractionCollection.FindOne(ctx, bson.M{
@@ -94,11 +96,14 @@ func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
 	}).Decode(&existing)
 
 	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"success": false,
-			"message": "an extraction already exists for this document",
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "existing extraction returned",
 			"data": gin.H{
-				"extraction_id": existing.ID,
+				"extraction_id": existing.ID.Hex(),
+				"document_id":   documentID.Hex(),
+				"field_count":   len(existing.ExtractedFields),
+				"extraction":    existing,
 			},
 		})
 		return
@@ -223,6 +228,18 @@ func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
 		return
 	}
 
+	insertedID, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "could not read saved extraction id",
+		})
+		return
+	}
+
+	// Keep the returned extraction object consistent with its MongoDB record.
+	record.ID = insertedID
+
 	_, err = s.DocumentCollection.UpdateOne(ctx,
 		bson.M{"_id": documentID},
 		bson.M{"$set": bson.M{
@@ -238,7 +255,7 @@ func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
 			"success": false,
 			"message": "extraction saved but document status could not be updated",
 			"data": gin.H{
-				"extraction_id": result.InsertedID,
+				"extraction_id": insertedID.Hex(),
 			},
 		})
 		return
@@ -248,8 +265,8 @@ func (s *GeminiExtractionService) ExtractDocument(c *gin.Context) {
 		"success": true,
 		"message": "pdf extraction completed",
 		"data": gin.H{
-			"extraction_id": result.InsertedID,
-			"document_id":   documentID,
+			"extraction_id": insertedID.Hex(),
+			"document_id":   documentID.Hex(),
 			"field_count":   len(fields),
 			"extraction":    record,
 		},

@@ -18,6 +18,21 @@ func SetupRouter(
 ) *gin.Engine {
 	router := gin.Default()
 
+	// configure cors for the react frontend
+	router.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
+		c.Next()
+	})
+
 	// initialize services
 	authService := &services.AuthService{
 		UserCollection: db.Collection("users"),
@@ -25,6 +40,10 @@ func SetupRouter(
 	}
 
 	rfqService := &services.RFQService{
+		Collection: db.Collection("rfqs"),
+	}
+
+	rfqStatusService := &services.RFQStatusService{
 		Collection: db.Collection("rfqs"),
 	}
 
@@ -42,7 +61,8 @@ func SetupRouter(
 	}
 
 	routingService := &services.RoutingService{
-		Collection: db.Collection("routings"),
+		Collection:     db.Collection("routings"),
+		PartCollection: db.Collection("parts"),
 	}
 
 	costingService := &services.CostingService{
@@ -127,6 +147,7 @@ func SetupRouter(
 	// rfq routes
 	protected.POST("/rfqs", rfqService.CreateRFQ)
 	protected.GET("/rfqs", rfqService.ListRFQs)
+	protected.PATCH("/rfqs/:rfq_id/status", rfqStatusService.UpdateStatus)
 
 	// part routes
 	protected.POST("/parts", partService.CreatePart)
@@ -145,8 +166,10 @@ func SetupRouter(
 
 	// quote routes
 	protected.POST("/quotes", quoteService.CreateQuote)
+	protected.GET("/quotes", quoteService.ListQuotes)
 
-	// quote approval route
+	// quote approval routes
+	protected.GET("/approvals", approvalService.ListApprovals)
 	protected.POST("/quotes/:id/review", approvalService.ReviewQuote)
 
 	// pdf quote route

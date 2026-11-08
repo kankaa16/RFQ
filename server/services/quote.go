@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"rfq_costing/server/models"
@@ -11,7 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+const approvalThreshold = 2500000.0
 
 type QuoteService struct {
 	Collection         *mongo.Collection
@@ -43,13 +47,18 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		return
 	}
 
-	if len(request.CostingIDs) == 0 ||
+	request.RFQID = strings.TrimSpace(request.RFQID)
+	request.CustomerID = strings.TrimSpace(request.CustomerID)
+
+	if request.RFQID == "" ||
+		request.CustomerID == "" ||
+		len(request.CostingIDs) == 0 ||
 		request.GSTPercent < 0 ||
 		request.GSTPercent > 100 ||
 		request.ValidityDays <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "invalid costings, gst or validity days",
+			"message": "invalid rfq, customer, costings, gst or validity days",
 		})
 		return
 	}
@@ -68,6 +77,15 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "invalid customer id",
+		})
+		return
+	}
+
+	userID, err := bson.ObjectIDFromHex(c.GetString("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "invalid logged-in user",
 		})
 		return
 	}
@@ -113,24 +131,15 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		return
 	}
 
-	userID, err := bson.ObjectIDFromHex(c.GetString("user_id"))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "invalid logged-in user",
-		})
-		return
-	}
-
 	costingIDs := make([]bson.ObjectID, 0, len(request.CostingIDs))
 	seen := make(map[bson.ObjectID]bool)
 
 	var subtotal float64
 	var annualValue float64
 
-	// validate each costing and calculate quote values
+	// validate costings and calculate annual quotation value
 	for _, id := range request.CostingIDs {
-		costingID, err := bson.ObjectIDFromHex(id)
+		costingID, err := bson.ObjectIDFromHex(strings.TrimSpace(id))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
@@ -146,6 +155,7 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 			})
 			return
 		}
+
 		seen[costingID] = true
 
 		var costing models.Costing
@@ -186,6 +196,14 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 			return
 		}
 
+		if costing.SellingPrice <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "costing selling price must be greater than zero",
+			})
+			return
+		}
+
 		subtotal += costing.SellingPrice
 		annualValue += costing.SellingPrice * float64(part.AnnualVolume)
 
@@ -196,16 +214,15 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 	gstAmount := subtotal * request.GSTPercent / 100
 	grandTotal := subtotal + gstAmount
 
-	// require approval when annual value exceeds 25 lakh
+	// send quotations above the annual value threshold for sales approval
 	status := models.QuoteStatusDraft
 
-	if annualValue > 2500000 {
+	if annualValue > approvalThreshold {
 		status = models.QuoteStatusPending
 	}
 
 	now := time.Now()
 
-	// use an object id suffix to avoid timestamp-only collisions
 	quoteNumber := fmt.Sprintf(
 		"QT-%s-%s",
 		now.Format("20060102-150405"),
@@ -223,10 +240,10 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		GrandTotal:       grandTotal,
 		AnnualValue:      annualValue,
 		Currency:         customer.PreferredCurrency,
-		PaymentTerms:     request.PaymentTerms,
-		DeliveryTerms:    request.DeliveryTerms,
+		PaymentTerms:     strings.TrimSpace(request.PaymentTerms),
+		DeliveryTerms:    strings.TrimSpace(request.DeliveryTerms),
 		ValidityDays:     request.ValidityDays,
-		DeliveryLocation: request.DeliveryLocation,
+		DeliveryLocation: strings.TrimSpace(request.DeliveryLocation),
 		Status:           status,
 		PreparedBy:       userID,
 	}
@@ -247,13 +264,112 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		"success": true,
 		"message": "quote created successfully",
 		"data": gin.H{
-			"id":           result.InsertedID,
-			"quote_number": quote.QuoteNumber,
-			"subtotal":     subtotal,
-			"gst_amount":   gstAmount,
-			"grand_total":  grandTotal,
-			"annual_value": annualValue,
-			"status":       status,
+			"id":                result.InsertedID,
+			"quote_number":      quote.QuoteNumber,
+			"subtotal":          subtotal,
+			"gst_amount":        gstAmount,
+			"grand_total":       grandTotal,
+			"annual_value":      annualValue,
+			"approval_required": status == models.QuoteStatusPending,
+			"status":            status,
 		},
 	})
+}
+
+func (s *QuoteService) ListQuotes(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	findOptions := options.Find().SetSort(bson.D{
+		{Key: "created_at", Value: -1},
+	})
+
+	cursor, err := s.Collection.Find(ctx, bson.M{}, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "could not fetch quotes",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	quotes := make([]models.Quote, 0)
+
+	if err := cursor.All(ctx, &quotes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "could not read quotes",
+		})
+		return
+	}
+
+	data := make([]gin.H, 0, len(quotes))
+
+	for _, quote := range quotes {
+		var rfq models.RFQ
+		var customer models.Customer
+
+		rfqNumber := ""
+		customerName := ""
+
+		// fetch associated rfq
+		err := s.RFQCollection.FindOne(ctx, bson.M{
+			"_id": quote.RFQID,
+		}).Decode(&rfq)
+
+		if err == nil {
+			rfqNumber = rfq.RFQNumber
+			customerName = rfq.CustomerName
+		}
+
+		// fetch associated customer
+		err = s.CustomerCollection.FindOne(ctx, bson.M{
+			"_id": quote.CustomerID,
+		}).Decode(&customer)
+
+		if err == nil {
+			customerName = customer.CompanyName
+		}
+
+		data = append(data, gin.H{
+			"id":                quote.ID.Hex(),
+			"quote_number":      quote.QuoteNumber,
+			"rfq_id":            quote.RFQID.Hex(),
+			"rfq_number":        rfqNumber,
+			"customer_id":       quote.CustomerID.Hex(),
+			"customer_name":     customerName,
+			"subtotal":          quote.Subtotal,
+			"gst_percent":       quote.GSTPercent,
+			"gst_amount":        quote.GSTAmount,
+			"grand_total":       quote.GrandTotal,
+			"annual_value":      quote.AnnualValue,
+			"currency":          quote.Currency,
+			"payment_terms":     quote.PaymentTerms,
+			"delivery_terms":    quote.DeliveryTerms,
+			"validity_days":     quote.ValidityDays,
+			"delivery_location": quote.DeliveryLocation,
+			"status":            quote.Status,
+			"prepared_by":       quote.PreparedBy.Hex(),
+			"approved_by":       objectIDHex(quote.ApprovedBy),
+			"created_at":        quote.CreatedAt,
+			"updated_at":        quote.UpdatedAt,
+			"approved_at":       quote.ApprovedAt,
+			"sent_at":           quote.SentAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"count":   len(data),
+		"data":    data,
+	})
+}
+
+func objectIDHex(id bson.ObjectID) string {
+	if id.IsZero() {
+		return ""
+	}
+
+	return id.Hex()
 }

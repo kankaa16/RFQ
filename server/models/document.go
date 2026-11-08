@@ -1,13 +1,11 @@
 package models
 
-import (
-	"go.mongodb.org/mongo-driver/v2/bson"
-)
+import "go.mongodb.org/mongo-driver/v2/bson"
 
 type Document struct {
 	BaseModel `bson:",inline"`
 
-	RFQID  bson.ObjectID `bson:"rfq_id" json:"rfq_id"`
+	RFQID  bson.ObjectID `bson:"rfq_id,omitempty" json:"rfq_id,omitempty"`
 	PartID bson.ObjectID `bson:"part_id,omitempty" json:"part_id,omitempty"`
 
 	FileName   string `bson:"file_name" json:"file_name"`

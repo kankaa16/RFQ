@@ -128,7 +128,7 @@ func (s *RoutingService) SaveRouting(c *gin.Context) {
 }
 
 func (s *RoutingService) GetRouting(c *gin.Context) {
-	partID, err := bson.ObjectIDFromHex(c.Param("id"))
+	partID, err := bson.ObjectIDFromHex(c.Param("part_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,

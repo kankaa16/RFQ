@@ -24,11 +24,30 @@ type DocumentService struct {
 }
 
 func (s *DocumentService) UploadDocument(c *gin.Context) {
-	rfqID, err := bson.ObjectIDFromHex(c.PostForm("rfq_id"))
+	// rfq_id is optional for new rfq intake.
+	var rfqID bson.ObjectID
+
+	rfqIDValue := strings.TrimSpace(c.PostForm("rfq_id"))
+
+	if rfqIDValue != "" {
+		parsedID, err := bson.ObjectIDFromHex(rfqIDValue)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "invalid rfq id",
+			})
+			return
+		}
+
+		rfqID = parsedID
+	}
+
+	// validate the logged-in user.
+	userID, err := bson.ObjectIDFromHex(c.GetString("user_id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
-			"message": "invalid rfq id",
+			"message": "invalid logged-in user",
 		})
 		return
 	}
@@ -55,6 +74,14 @@ func (s *DocumentService) UploadDocument(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "only pdf, xlsx, xls and csv files are allowed",
+		})
+		return
+	}
+
+	if file.Size <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "uploaded file is empty",
 		})
 		return
 	}
@@ -89,7 +116,11 @@ func (s *DocumentService) UploadDocument(c *gin.Context) {
 
 	fileHash := hex.EncodeToString(hash.Sum(nil))
 
-	storedName := fmt.Sprintf("%s%s", bson.NewObjectID().Hex(), extension)
+	storedName := fmt.Sprintf(
+		"%s%s",
+		bson.NewObjectID().Hex(),
+		extension,
+	)
 
 	uploadDirectory := filepath.Join("uploads", "rfq_documents")
 
@@ -111,20 +142,9 @@ func (s *DocumentService) UploadDocument(c *gin.Context) {
 		return
 	}
 
-	userID, err := bson.ObjectIDFromHex(c.GetString("user_id"))
-	if err != nil {
-		_ = os.Remove(storagePath)
-
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "invalid logged-in user",
-		})
-		return
-	}
-
-	category := c.PostForm("category")
+	category := strings.TrimSpace(c.PostForm("category"))
 	if category == "" {
-		category = models.DocumentTypeOther
+		category = models.DocumentTypePartList
 	}
 
 	document := models.Document{
