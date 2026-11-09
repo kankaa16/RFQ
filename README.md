@@ -1,13 +1,4 @@
 # RFQ-to-Quote Costing Web Application
-
-**Technical Design Document (TDD)**  
-**Project:** Auto-component manufacturer's RFQ-to-Quote Costing Web App  
-**Document status:** Development snapshot  
-**Last updated:** 8 November 2026
-
-> **GitHub repository:** https://github.com/kankaa16/RFQ
-> **Live application:** TODO 
-
 ---
 
 ## 1. Project overview
@@ -117,7 +108,6 @@ rfq_costing/
 └── README.md
 ```
 
-The `.env` file is local configuration and must not be committed.
 
 ## 6. Architecture and request flow
 
