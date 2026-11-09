@@ -1,4 +1,3 @@
-
 import React from "react";
 import {
   Search,
@@ -9,14 +8,46 @@ import {
   Send,
   Trophy,
   XCircle,
-  Loader2
+  Loader2,
+  FileText
 } from "lucide-react";
+
 import StatusBadge from "../components/status_badge.jsx";
 import { apiRequest } from "../services/api.js";
 
-export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
+function formatCurrency(value) {
+  return `₹${Number(value || 0).toLocaleString("en-IN", {
+    maximumFractionDigits: 2
+  })}`;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("en-IN");
+}
+
+function getId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (value.$oid) return value.$oid;
+  if (value.hex) return value.hex;
+  return "";
+}
+
+export default function RFQs({
+  rfqs = [],
+  loading,
+  onRefresh,
+  onLoadParts
+}) {
   const [query, setQuery] = React.useState("");
   const [status, setStatus] = React.useState("all");
+
   const [selected, setSelected] = React.useState(null);
   const [parts, setParts] = React.useState([]);
   const [partsLoading, setPartsLoading] = React.useState(false);
@@ -24,6 +55,7 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
   const [userRole, setUserRole] = React.useState("");
   const [updating, setUpdating] = React.useState(false);
   const [lossReason, setLossReason] = React.useState("");
+
   const [error, setError] = React.useState("");
   const [success, setSuccess] = React.useState("");
 
@@ -41,12 +73,34 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
     loadProfile();
   }, []);
 
-  const filtered = rfqs.filter((r) => {
-    const match = `${r.rfq_number} ${r.customer_name}`
-      .toLowerCase()
-      .includes(query.toLowerCase());
+  // keep the selected drawer record in sync with refreshed rfq data
+  React.useEffect(() => {
+    if (!selected) return;
 
-    return match && (status === "all" || r.status === status);
+    const selectedId = getId(selected.id || selected._id);
+
+    const refreshedRFQ = rfqs.find(
+      (rfq) => getId(rfq.id || rfq._id) === selectedId
+    );
+
+    if (refreshedRFQ) {
+      setSelected(refreshedRFQ);
+    }
+  }, [rfqs]);
+
+  const filtered = rfqs.filter((rfq) => {
+    const searchableText = [
+      rfq.rfq_number,
+      rfq.customer_name,
+      rfq.latest_quote_number
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    const match = searchableText.includes(query.toLowerCase());
+
+    return match && (status === "all" || rfq.status === status);
   });
 
   async function openRFQ(rfq) {
@@ -58,7 +112,11 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
     setLossReason("");
 
     try {
-      setParts(await onLoadParts(rfq.id));
+      const loadedParts = await onLoadParts(
+        getId(rfq.id || rfq._id)
+      );
+
+      setParts(Array.isArray(loadedParts) ? loadedParts : []);
     } catch {
       setParts([]);
     } finally {
@@ -87,14 +145,18 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
     setSuccess("");
 
     try {
-      const payload = { status: nextStatus };
+      const selectedId = getId(selected.id || selected._id);
+
+      const payload = {
+        status: nextStatus
+      };
 
       if (nextStatus === "lost") {
         payload.lost_reason = lossReason.trim();
       }
 
       const response = await apiRequest(
-        `/api/rfqs/${selected.id}/status`,
+        `/api/rfqs/${selectedId}/status`,
         {
           method: "PATCH",
           body: JSON.stringify(payload)
@@ -108,7 +170,10 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
       setSelected((current) => ({
         ...current,
         status: nextStatus,
-        lost_reason: nextStatus === "lost" ? lossReason.trim() : current.lost_reason
+        lost_reason:
+          nextStatus === "lost"
+            ? lossReason.trim()
+            : current.lost_reason
       }));
 
       setSuccess(`RFQ successfully marked as ${nextStatus}.`);
@@ -126,13 +191,24 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
     <>
       <div className="page-heading">
         <div>
-          <span className="eyebrow"><i /> WORK QUEUE</span>
+          <span className="eyebrow">
+            <i /> WORK QUEUE
+          </span>
+
           <h1>RFQ register</h1>
-          <p>Track every customer request from intake to outcome.</p>
+
+          <p>
+            Track every customer request from intake to outcome.
+          </p>
         </div>
 
-        <button className="secondary-button" onClick={onRefresh}>
-          <RefreshCw size={15} /> Refresh
+        <button
+          className="secondary-button"
+          onClick={onRefresh}
+          disabled={loading}
+        >
+          <RefreshCw size={15} />
+          Refresh
         </button>
       </div>
 
@@ -140,14 +216,18 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
         <div className="toolbar">
           <div className="search-box">
             <Search size={16} />
+
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search RFQ or customer..."
+              placeholder="Search RFQ, customer or quote..."
             />
           </div>
 
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
             <option value="all">All statuses</option>
             <option value="estimating">Estimating</option>
             <option value="sent">Sent</option>
@@ -155,7 +235,9 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
             <option value="lost">Lost</option>
           </select>
 
-          <span className="result-count">{filtered.length} records</span>
+          <span className="result-count">
+            {filtered.length} records
+          </span>
         </div>
 
         {loading ? (
@@ -171,45 +253,82 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
                   <th>RECEIVED</th>
                   <th>DUE DATE</th>
                   <th>EXPECTED VALUE</th>
-                  <th>STATUS</th>
+                  <th>RFQ STATUS</th>
+                  <th>QUOTE NUMBER</th>
+                  <th>QUOTE STATUS</th>
+                  <th>QUOTED VALUE</th>
                   <th />
                 </tr>
               </thead>
 
               <tbody>
-                {filtered.map((r) => (
-                  <tr
-                    key={r.id}
-                    onClick={() => openRFQ(r)}
-                    className="clickable-row"
-                  >
-                    <td><strong>{r.rfq_number}</strong></td>
-                    <td>{r.customer_name || "—"}</td>
-                    <td>{r.part_count ?? "—"}</td>
-                    <td>
-                      {r.received_at
-                        ? new Date(r.received_at).toLocaleDateString("en-IN")
-                        : "—"}
-                    </td>
-                    <td>
-                      {r.due_date
-                        ? new Date(r.due_date).toLocaleDateString("en-IN")
-                        : "—"}
-                    </td>
-                    <td>
-                      {r.expected_annual_value
-                        ? `₹${Number(r.expected_annual_value).toLocaleString("en-IN")}`
-                        : "—"}
-                    </td>
-                    <td><StatusBadge status={r.status} /></td>
-                    <td><ChevronRight size={16} className="muted-icon" /></td>
-                  </tr>
-                ))}
+                {filtered.map((rfq) => {
+                  const rfqId = getId(rfq.id || rfq._id);
+
+                  return (
+                    <tr
+                      key={rfqId}
+                      onClick={() => openRFQ(rfq)}
+                      className="clickable-row"
+                    >
+                      <td>
+                        <strong>{rfq.rfq_number}</strong>
+                      </td>
+
+                      <td>{rfq.customer_name || "—"}</td>
+
+                      <td>{rfq.part_count ?? "—"}</td>
+
+                      <td>{formatDate(rfq.received_at)}</td>
+
+                      <td>{formatDate(rfq.due_date)}</td>
+
+                      <td>
+                        {rfq.expected_annual_value
+                          ? formatCurrency(rfq.expected_annual_value)
+                          : "—"}
+                      </td>
+
+                      <td>
+                        <StatusBadge status={rfq.status} />
+                      </td>
+
+                      <td>
+                        {rfq.latest_quote_number || "—"}
+                      </td>
+
+                      <td>
+                        {rfq.latest_quote_status ? (
+                          <StatusBadge
+                            status={rfq.latest_quote_status}
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      <td>
+                        {rfq.latest_quote_grand_total
+                          ? formatCurrency(rfq.latest_quote_grand_total)
+                          : "—"}
+                      </td>
+
+                      <td>
+                        <ChevronRight
+                          size={16}
+                          className="muted-icon"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
 
             {!filtered.length && (
-              <div className="empty-state">No matching RFQs found.</div>
+              <div className="empty-state">
+                No matching RFQs found.
+              </div>
             )}
           </div>
         )}
@@ -246,17 +365,13 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
 
             <div className="detail-pair">
               <span>Due date</span>
-              <strong>
-                {selected.due_date
-                  ? new Date(selected.due_date).toLocaleDateString("en-IN")
-                  : "—"}
-              </strong>
+              <strong>{formatDate(selected.due_date)}</strong>
             </div>
 
             <div className="detail-pair">
               <span>Annual value</span>
               <strong>
-                ₹{Number(selected.expected_annual_value || 0).toLocaleString("en-IN")}
+                {formatCurrency(selected.expected_annual_value)}
               </strong>
             </div>
 
@@ -268,23 +383,78 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
             )}
 
             <div className="drawer-section-title">
-              <Package size={16} /> PARTS ({parts.length || selected.part_count || 0})
+              <FileText size={16} />
+              QUOTATION DETAILS
+            </div>
+
+            <div className="detail-pair">
+              <span>Latest quote</span>
+              <strong>
+                {selected.latest_quote_number || "Not created"}
+              </strong>
+            </div>
+
+            <div className="detail-pair">
+              <span>Quote status</span>
+              <strong>
+                {selected.latest_quote_status ? (
+                  <StatusBadge status={selected.latest_quote_status} />
+                ) : (
+                  "—"
+                )}
+              </strong>
+            </div>
+
+            <div className="detail-pair">
+              <span>Quoted value (including GST)</span>
+              <strong>
+                {selected.latest_quote_grand_total
+                  ? formatCurrency(selected.latest_quote_grand_total)
+                  : "—"}
+              </strong>
+            </div>
+
+            <div className="detail-pair">
+              <span>Annual quotation value</span>
+              <strong>
+                {selected.latest_quote_annual_value
+                  ? formatCurrency(selected.latest_quote_annual_value)
+                  : "—"}
+              </strong>
+            </div>
+
+            <div className="detail-pair">
+              <span>Quote created</span>
+              <strong>{formatDate(selected.latest_quoted_at)}</strong>
+            </div>
+
+            <div className="drawer-section-title">
+              <Package size={16} />
+              PARTS ({parts.length || selected.part_count || 0})
             </div>
 
             {partsLoading ? (
-              <div className="empty-state">Loading parts...</div>
+              <div className="empty-state">
+                Loading parts...
+              </div>
             ) : (
-              parts.map((p) => (
-                <div className="part-card" key={p.id}>
-                  <strong>{p.part_name}</strong>
-                  <span>{p.part_number}</span>
+              parts.map((part) => (
+                <div
+                  className="part-card"
+                  key={getId(part.id || part._id)}
+                >
+                  <strong>{part.part_name}</strong>
+
+                  <span>{part.part_number}</span>
+
                   <small>
-                    {p.material_grade} · {p.gross_weight} kg gross ·{" "}
-                    {Number(p.annual_volume).toLocaleString("en-IN")} / year
+                    {part.material_grade} · {part.gross_weight} kg gross ·{" "}
+                    {Number(part.annual_volume).toLocaleString("en-IN")} / year
                   </small>
+
                   <small>
-                    Drawing: {p.drawing_number || "—"} · Rev{" "}
-                    {p.drawing_revision || "—"}
+                    Drawing: {part.drawing_number || "—"} · Rev{" "}
+                    {part.drawing_revision || "—"}
                   </small>
                 </div>
               ))
@@ -292,8 +462,13 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
 
             {(error || success) && (
               <div className="status-message" role="status">
-                {error && <p className="error-message">{error}</p>}
-                {success && <p className="success-message">{success}</p>}
+                {error && (
+                  <p className="error-message">{error}</p>
+                )}
+
+                {success && (
+                  <p className="success-message">{success}</p>
+                )}
               </div>
             )}
 
@@ -304,7 +479,12 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
                   onClick={() => updateStatus("sent")}
                   disabled={updating}
                 >
-                  {updating ? <Loader2 size={15} /> : <Send size={15} />}
+                  {updating ? (
+                    <Loader2 size={15} />
+                  ) : (
+                    <Send size={15} />
+                  )}
+
                   Mark as sent
                 </button>
               </div>
@@ -317,11 +497,15 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
                   onClick={() => updateStatus("won")}
                   disabled={updating}
                 >
-                  <Trophy size={15} /> Mark as won
+                  <Trophy size={15} />
+                  Mark as won
                 </button>
 
                 <div className="loss-reason">
-                  <label htmlFor="loss-reason">Reason for loss</label>
+                  <label htmlFor="loss-reason">
+                    Reason for loss
+                  </label>
+
                   <textarea
                     id="loss-reason"
                     value={lossReason}
@@ -336,14 +520,17 @@ export default function RFQs({ rfqs = [], loading, onRefresh, onLoadParts }) {
                     onClick={() => updateStatus("lost")}
                     disabled={updating || !lossReason.trim()}
                   >
-                    <XCircle size={15} /> Mark as lost
+                    <XCircle size={15} />
+                    Mark as lost
                   </button>
                 </div>
               </div>
             )}
 
             {updating && (
-              <p className="loading-text">Updating RFQ status...</p>
+              <p className="loading-text">
+                Updating RFQ status...
+              </p>
             )}
           </aside>
         </div>

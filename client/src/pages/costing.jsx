@@ -8,7 +8,8 @@ import {
   CheckCircle2,
   Plus,
   Trash2,
-  Settings2
+  Settings2,
+  AlertCircle
 } from "lucide-react";
 import { api, apiRequest } from "../services/api.js";
 
@@ -40,10 +41,40 @@ function newOperation() {
   };
 }
 
+function extractList(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.data?.rates)) return response.data.rates;
+  if (Array.isArray(response?.rates)) return response.rates;
+  return [];
+}
+
+function isRateEffective(rate) {
+  if (!rate.is_active) return false;
+
+  const now = new Date();
+  const from = rate.effective_from
+    ? new Date(rate.effective_from)
+    : null;
+
+  const to = rate.effective_to &&
+    !String(rate.effective_to).startsWith("0001-01-01")
+    ? new Date(rate.effective_to)
+    : null;
+
+  if (from && from > now) return false;
+  if (to && to <= now) return false;
+
+  return true;
+}
+
 export default function Costing({ rfqs, onLoadParts, onCalculate }) {
   const [rfqId, setRfqId] = React.useState("");
   const [parts, setParts] = React.useState([]);
   const [partId, setPartId] = React.useState("");
+
+  const [rates, setRates] = React.useState([]);
+  const [ratesLoading, setRatesLoading] = React.useState(false);
 
   const [form, setForm] = React.useState({
     material_rate: 100,
@@ -80,15 +111,38 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
   const costingData = result?.data || result;
   const scenarios = costingData?.scenarios || [];
 
+  const machineRates = rates.filter(
+    (rate) =>
+      rate.rate_type === "machine" &&
+      rate.is_active
+  );
+
+  const effectiveMachineRates = machineRates.filter(isRateEffective);
+
+  React.useEffect(() => {
+    loadRates();
+  }, []);
+
+  async function loadRates() {
+    setRatesLoading(true);
+
+    try {
+      const response = await apiRequest("/api/rates");
+      setRates(extractList(response));
+    } catch (e) {
+      setError(`Could not load machine rate masters: ${e.message}`);
+    } finally {
+      setRatesLoading(false);
+    }
+  }
+
   async function loadRouting(id) {
     setRoutingLoading(true);
     setRoutingVerified(false);
     setRoutingOperations([]);
 
     try {
-      const response = await apiRequest(
-        `/api/parts/${id}/routing`
-      );
+      const response = await apiRequest(`/api/parts/${id}/routing`);
 
       const routing =
         response.data?.routing ||
@@ -98,21 +152,44 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
       const operations = routing.operations || [];
 
-      setRoutingOperations(
-        operations.length
-          ? operations.map((operation) => ({
+      const mappedOperations = operations.length
+        ? operations.map((operation) => {
+            const rateMasterId = getId(operation.rate_master_id);
+
+            const matchingRate = rates.find(
+              (rate) => getId(rate.id || rate._id) === rateMasterId
+            );
+
+            return {
               name: operation.name || "",
               machine_type: operation.machine_type || "",
               cycle_time_minutes: operation.cycle_time_minutes ?? "",
               setup_time_minutes: operation.setup_time_minutes ?? 0,
               batch_size: operation.batch_size ?? 1000,
-              hour_rate: operation.hour_rate ?? "",
-              rate_master_id: getId(operation.rate_master_id)
-            }))
-          : [newOperation()]
+              hour_rate: matchingRate
+                ? matchingRate.rate
+                : operation.hour_rate ?? "",
+              rate_master_id: rateMasterId
+            };
+          })
+        : [newOperation()];
+
+      setRoutingOperations(mappedOperations);
+
+      // An old routing without rate master references must be editable.
+      const allRatesLinked = mappedOperations.every(
+        (operation) => operation.rate_master_id
       );
 
-      setRoutingVerified(Boolean(routing.is_verified));
+      setRoutingVerified(
+        Boolean(routing.is_verified) && allRatesLinked
+      );
+
+      if (routing.is_verified && !allRatesLinked) {
+        setError(
+          "This routing has no Rate Master linked to every operation. Select the correct rates and save it again."
+        );
+      }
     } catch (e) {
       if (
         e.message?.toLowerCase().includes("not found") ||
@@ -144,7 +221,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
     try {
       const loadedParts = await onLoadParts(id);
-      setParts(loadedParts);
+      setParts(Array.isArray(loadedParts) ? loadedParts : []);
     } catch (e) {
       setError(e.message);
     }
@@ -178,21 +255,47 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
     setQuote(null);
   }
 
+  function selectMachineRate(index, rateId) {
+    const selectedRate = effectiveMachineRates.find(
+      (rate) => getId(rate.id || rate._id) === rateId
+    );
+
+    setRoutingOperations((current) =>
+      current.map((operation, i) =>
+        i === index
+          ? {
+              ...operation,
+              rate_master_id: rateId,
+              hour_rate: selectedRate ? selectedRate.rate : ""
+            }
+          : operation
+      )
+    );
+
+    setRoutingVerified(false);
+    setResult(null);
+    setQuote(null);
+  }
+
   function addOperation() {
     setRoutingOperations((current) => [
       ...current,
       newOperation()
     ]);
+
     setRoutingVerified(false);
     setResult(null);
+    setQuote(null);
   }
 
   function removeOperation(index) {
     setRoutingOperations((current) =>
       current.filter((_, i) => i !== index)
     );
+
     setRoutingVerified(false);
     setResult(null);
+    setQuote(null);
   }
 
   function validateRouting() {
@@ -232,11 +335,21 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
         throw new Error(`Enter a valid batch size for operation ${i + 1}.`);
       }
 
-      if (
-        Number(operation.hour_rate) <= 0 ||
-        !Number.isFinite(Number(operation.hour_rate))
-      ) {
-        throw new Error(`Enter a valid hourly rate for operation ${i + 1}.`);
+      if (!operation.rate_master_id) {
+        throw new Error(
+          `Select a machine Rate Master for operation ${i + 1}.`
+        );
+      }
+
+      const selectedRate = effectiveMachineRates.find(
+        (rate) =>
+          getId(rate.id || rate._id) === operation.rate_master_id
+      );
+
+      if (!selectedRate) {
+        throw new Error(
+          `The selected machine rate for operation ${i + 1} is not currently effective.`
+        );
       }
     }
   }
@@ -249,7 +362,6 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
     if (routingVerified) return;
 
     validateRouting();
-
     setRoutingSaving(true);
 
     try {
@@ -261,9 +373,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
         setup_time_minutes: Number(operation.setup_time_minutes),
         batch_size: Number(operation.batch_size),
         hour_rate: Number(operation.hour_rate),
-        ...(operation.rate_master_id
-          ? { rate_master_id: operation.rate_master_id }
-          : {})
+        rate_master_id: operation.rate_master_id
       }));
 
       const response = await apiRequest(
@@ -320,7 +430,6 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
         throw new Error("Select a part first.");
       }
 
-      // save and verify routing before calculating
       if (!routingVerified) {
         await saveRouting();
       }
@@ -412,9 +521,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
             <i /> COST ENGINE
           </span>
           <h1>Part costing</h1>
-          <p>
-            Calculate unit economics and generate customer quotations.
-          </p>
+          <p>Calculate unit economics and generate customer quotations.</p>
         </div>
       </div>
 
@@ -467,8 +574,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
             <div className="selected-part">
               <strong>{selectedPart.part_name}</strong>
               <span>
-                {selectedPart.material_grade} ·{" "}
-                {selectedPart.gross_weight} kg gross weight
+                {selectedPart.material_grade} · {selectedPart.gross_weight} kg gross weight
               </span>
             </div>
           )}
@@ -478,154 +584,179 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
           <div className="panel-heading">
             <div>
               <h2>Manufacturing routing</h2>
-              <p>
-                Define the operations required to manufacture this part.
-              </p>
+              <p>Define the operations and link each one to an approved machine rate.</p>
             </div>
             <Settings2 size={19} />
           </div>
 
-          {routingLoading ? (
+          {routingLoading || ratesLoading ? (
             <div className="inline-info">
-              Loading routing...
+              Loading routing and machine rate masters...
             </div>
           ) : (
             <>
               {routingVerified && (
                 <div className="inline-info">
                   <CheckCircle2 size={15} />
-                  Verified routing is available for this part.
+                  Verified routing with linked machine rate masters is available.
                 </div>
               )}
 
               {!routingVerified && (
                 <div className="inline-info">
                   <Info size={15} />
-                  Enter the actual manufacturing operations and machine
-                  rates. Routing must be verified before costing.
+                  Select a valid machine Rate Master for every operation before costing.
                 </div>
               )}
 
-              {routingOperations.map((operation, index) => (
-                <div
-                  className="selected-part"
-                  key={index}
-                  style={{ marginBottom: 14 }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 12
-                    }}
-                  >
-                    <strong>Operation {index + 1}</strong>
-
-                    {!routingVerified && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => removeOperation(index)}
-                        disabled={routingOperations.length === 1}
-                        title="Remove operation"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="input-grid">
-                    <div>
-                      <label>Operation name</label>
-                      <input
-                        value={operation.name}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(index, "name", e.target.value)
-                        }
-                        placeholder="CNC Turning"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Machine type</label>
-                      <input
-                        value={operation.machine_type}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(index, "machine_type", e.target.value)
-                        }
-                        placeholder="CNC Lathe"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Cycle time (minutes)</label>
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={operation.cycle_time_minutes}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(
-                            index,
-                            "cycle_time_minutes",
-                            e.target.value
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <label>Setup time (minutes)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={operation.setup_time_minutes}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(
-                            index,
-                            "setup_time_minutes",
-                            e.target.value
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <label>Batch size</label>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={operation.batch_size}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(index, "batch_size", e.target.value)
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <label>Machine rate (₹ / hour)</label>
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={operation.hour_rate}
-                        disabled={routingVerified}
-                        onChange={(e) =>
-                          updateOperation(index, "hour_rate", e.target.value)
-                        }
-                      />
-                    </div>
-                  </div>
+              {!effectiveMachineRates.length && (
+                <div className="form-error">
+                  No currently effective active machine rates were found.
+                  Add or activate a machine rate in Rate Masters before continuing.
                 </div>
-              ))}
+              )}
+
+              {routingOperations.map((operation, index) => {
+                const selectedRate = effectiveMachineRates.find(
+                  (rate) =>
+                    getId(rate.id || rate._id) === operation.rate_master_id
+                );
+
+                return (
+                  <div
+                    className="selected-part"
+                    key={index}
+                    style={{ marginBottom: 14 }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: 12
+                      }}
+                    >
+                      <strong>Operation {index + 1}</strong>
+
+                      {!routingVerified && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => removeOperation(index)}
+                          disabled={routingOperations.length === 1}
+                          title="Remove operation"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="input-grid">
+                      <div>
+                        <label>Operation name</label>
+                        <input
+                          value={operation.name}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            updateOperation(index, "name", e.target.value)
+                          }
+                          placeholder="CNC Turning"
+                        />
+                      </div>
+
+                      <div>
+                        <label>Machine type</label>
+                        <input
+                          value={operation.machine_type}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            updateOperation(index, "machine_type", e.target.value)
+                          }
+                          placeholder="CNC Lathe"
+                        />
+                      </div>
+
+                      <div>
+                        <label>Cycle time (minutes)</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={operation.cycle_time_minutes}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            updateOperation(index, "cycle_time_minutes", e.target.value)
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <label>Setup time (minutes)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={operation.setup_time_minutes}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            updateOperation(index, "setup_time_minutes", e.target.value)
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <label>Batch size</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={operation.batch_size}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            updateOperation(index, "batch_size", e.target.value)
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <label>Machine Rate Master *</label>
+                        <select
+                          value={operation.rate_master_id}
+                          disabled={routingVerified}
+                          onChange={(e) =>
+                            selectMachineRate(index, e.target.value)
+                          }
+                        >
+                          <option value="">Select machine rate</option>
+                          {effectiveMachineRates.map((rate) => {
+                            const id = getId(rate.id || rate._id);
+                            return (
+                              <option value={id} key={id}>
+                                {rate.rate_code} · ₹{rate.rate}/{rate.unit}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label>Machine rate (₹ / hour)</label>
+                        <input
+                          type="number"
+                          value={operation.hour_rate}
+                          readOnly
+                          placeholder="Select a Rate Master"
+                        />
+                        {selectedRate && (
+                          <small>
+                            Linked to {selectedRate.rate_code}, version {selectedRate.version || 1}
+                          </small>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
 
               {!routingVerified && (
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -653,7 +784,8 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
                     disabled={
                       !partId ||
                       routingSaving ||
-                      routingLoading
+                      routingLoading ||
+                      ratesLoading
                     }
                   >
                     {routingSaving ? "Saving..." : "Save & verify routing"}
@@ -661,6 +793,20 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
                 </div>
               )}
             </>
+          )}
+
+          {routingVerified && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setRoutingVerified(false);
+                setResult(null);
+                setQuote(null);
+              }}
+            >
+              Edit routing
+            </button>
           )}
 
           <div className="form-divider" />
@@ -765,16 +911,18 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
           <div className="inline-info">
             <Info size={15} />
-            Confirm material, scrap and GST rates against approved masters
-            and the applicable tax classification.
+            Confirm material, scrap and GST rates against approved masters and the applicable tax classification.
           </div>
 
-          {error && <div className="form-error">{error}</div>}
+          {error && (
+            <div className="form-error">
+              <AlertCircle size={15} /> {error}
+            </div>
+          )}
 
           {success && (
             <div className="inline-info">
-              <CheckCircle2 size={15} />
-              {success}
+              <CheckCircle2 size={15} /> {success}
             </div>
           )}
 
@@ -784,6 +932,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
               loading ||
               routingLoading ||
               routingSaving ||
+              ratesLoading ||
               !partId
             }
             type="submit"
@@ -812,8 +961,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
               </span>
               <strong>Your costing results will appear here.</strong>
               <span>
-                Select a part, configure its routing and enter cost inputs
-                to get started.
+                Select a part, configure its routing and enter cost inputs to get started.
               </span>
             </div>
           ) : (
@@ -837,8 +985,7 @@ export default function Costing({ rfqs, onLoadParts, onCalculate }) {
 
               <div className="inline-info">
                 <Info size={15} />
-                Costing has been saved. Create a quotation to submit it
-                for approval if the annual value exceeds ₹25 lakh.
+                Costing has been saved. Create a quotation to submit it for approval if the annual value exceeds ₹25 lakh.
               </div>
 
               {!quote ? (

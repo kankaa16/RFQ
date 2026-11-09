@@ -37,6 +37,14 @@ type RFQ struct {
 	Status     string `bson:"status" json:"status"`
 	LostReason string `bson:"lost_reason,omitempty" json:"lost_reason,omitempty"`
 
+	// latest quotation linked to this rfq
+	LatestQuoteID          bson.ObjectID `bson:"latest_quote_id,omitempty" json:"latest_quote_id,omitempty"`
+	LatestQuoteNumber      string        `bson:"latest_quote_number,omitempty" json:"latest_quote_number,omitempty"`
+	LatestQuoteStatus      string        `bson:"latest_quote_status,omitempty" json:"latest_quote_status,omitempty"`
+	LatestQuoteGrandTotal  float64       `bson:"latest_quote_grand_total,omitempty" json:"latest_quote_grand_total,omitempty"`
+	LatestQuoteAnnualValue float64       `bson:"latest_quote_annual_value,omitempty" json:"latest_quote_annual_value,omitempty"`
+	LatestQuotedAt         *time.Time    `bson:"latest_quoted_at,omitempty" json:"latest_quoted_at,omitempty"`
+
 	InternalNotes string `bson:"internal_notes,omitempty" json:"internal_notes,omitempty"`
 }
 

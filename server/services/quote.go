@@ -101,9 +101,17 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 	}).Decode(&rfq)
 
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "rfq not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "rfq not found",
+			"message": "could not verify rfq",
 		})
 		return
 	}
@@ -116,9 +124,17 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 	}).Decode(&customer)
 
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "customer not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "customer not found",
+			"message": "could not verify customer",
 		})
 		return
 	}
@@ -166,9 +182,17 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		}).Decode(&costing)
 
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
+			if err == mongo.ErrNoDocuments {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"message": "costing not found for this rfq",
+				})
+				return
+			}
+
+			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
-				"message": "costing not found for this rfq",
+				"message": "could not verify costing",
 			})
 			return
 		}
@@ -181,9 +205,17 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		}).Decode(&part)
 
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
+			if err == mongo.ErrNoDocuments {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"message": "part not found for this costing",
+				})
+				return
+			}
+
+			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
-				"message": "part not found for this costing",
+				"message": "could not verify part",
 			})
 			return
 		}
@@ -223,14 +255,12 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 
 	now := time.Now()
 
-	quoteNumber := fmt.Sprintf(
-		"QT-%s-%s",
-		now.Format("20060102-150405"),
-		bson.NewObjectID().Hex()[:8],
-	)
-
 	quote := models.Quote{
-		QuoteNumber:      quoteNumber,
+		QuoteNumber: fmt.Sprintf(
+			"QT-%s-%s",
+			now.Format("20060102-150405"),
+			bson.NewObjectID().Hex()[:8],
+		),
 		RFQID:            rfqID,
 		CustomerID:       customerID,
 		CostingIDs:       costingIDs,
@@ -248,10 +278,12 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		PreparedBy:       userID,
 	}
 
+	quote.ID = bson.NewObjectID()
 	quote.CreatedAt = now
 	quote.UpdatedAt = now
 
-	result, err := s.Collection.InsertOne(ctx, quote)
+	// create quote
+	_, err = s.Collection.InsertOne(ctx, quote)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -260,13 +292,45 @@ func (s *QuoteService) CreateQuote(c *gin.Context) {
 		return
 	}
 
+	// link the latest quote to its rfq without changing the rfq workflow status
+	_, err = s.RFQCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": rfqID},
+		bson.M{
+			"$set": bson.M{
+				"latest_quote_id":           quote.ID,
+				"latest_quote_number":       quote.QuoteNumber,
+				"latest_quote_status":       quote.Status,
+				"latest_quote_grand_total":  quote.GrandTotal,
+				"latest_quote_annual_value": quote.AnnualValue,
+				"latest_quoted_at":          now,
+				"updated_at":                now,
+			},
+		},
+	)
+
+	if err != nil {
+		// remove the quote if its rfq could not be updated
+		_, _ = s.Collection.DeleteOne(ctx, bson.M{
+			"_id": quote.ID,
+		})
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "quote could not be linked to its rfq",
+		})
+		return
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
-		"message": "quote created successfully",
+		"message": "quote created and linked to rfq successfully",
 		"data": gin.H{
-			"id":                result.InsertedID,
+			"id":                quote.ID.Hex(),
 			"quote_number":      quote.QuoteNumber,
+			"rfq_id":            rfqID.Hex(),
 			"subtotal":          subtotal,
+			"gst_percent":       request.GSTPercent,
 			"gst_amount":        gstAmount,
 			"grand_total":       grandTotal,
 			"annual_value":      annualValue,
