@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type CostingService struct {
@@ -107,37 +108,93 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		return
 	}
 
-	// fetch verified routing
-	var routing models.Routing
+	// fetch verified routing records, newest first
+	findOptions := options.Find().SetSort(bson.D{
+		{Key: "updated_at", Value: -1},
+		{Key: "created_at", Value: -1},
+	})
 
-	err = s.RoutingCollection.FindOne(
+	cursor, err := s.RoutingCollection.Find(
 		ctx,
 		bson.M{
 			"part_id":     partID,
 			"is_verified": true,
 		},
-	).Decode(&routing)
+		findOptions,
+	)
 
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "verified routing not found for this part",
-			})
-			return
-		}
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "could not fetch routing",
+			"message": "could not fetch routing records",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var routingRecords []models.Routing
+
+	if err := cursor.All(ctx, &routingRecords); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "could not read routing records",
 		})
 		return
 	}
 
-	if len(routing.Operations) == 0 {
+	if len(routingRecords) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "routing has no operations",
+			"message": "verified routing not found for this part",
+		})
+		return
+	}
+
+	// select the newest verified routing with a rate master
+	// linked to every operation
+	var routing models.Routing
+	foundValidRouting := false
+	missingRateOperation := ""
+
+	for _, candidate := range routingRecords {
+		if len(candidate.Operations) == 0 {
+			continue
+		}
+
+		candidateValid := true
+		candidateMissingOperation := ""
+
+		for _, operation := range candidate.Operations {
+			if operation.RateMasterID.IsZero() {
+				candidateValid = false
+				candidateMissingOperation = operation.Name
+				break
+			}
+		}
+
+		if candidateValid {
+			routing = candidate
+			foundValidRouting = true
+			break
+		}
+
+		if missingRateOperation == "" {
+			missingRateOperation = candidateMissingOperation
+		}
+	}
+
+	if !foundValidRouting {
+		if missingRateOperation != "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "no verified routing has a linked rate master for every operation; missing rate master for operation: " + missingRateOperation + ". Please edit and save the routing again.",
+			})
+			return
+		}
+
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "verified routing has no operations",
 		})
 		return
 	}
@@ -153,26 +210,11 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 	// calculate machining and setup costs using rate masters
 	for _, operation := range routing.Operations {
 		if operation.CycleTimeMinutes <= 0 ||
-			operation.SetupTimeMinutes < 0 {
+			operation.SetupTimeMinutes < 0 ||
+			(operation.SetupTimeMinutes > 0 && operation.BatchSize <= 0) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
-				"message": "routing contains invalid operation values",
-			})
-			return
-		}
-
-		if operation.SetupTimeMinutes > 0 && operation.BatchSize <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "batch size must be positive when setup time is specified",
-			})
-			return
-		}
-
-		if operation.RateMasterID == bson.NilObjectID {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "rate master is missing for operation: " + operation.Name,
+				"message": "routing contains invalid values for operation: " + operation.Name,
 			})
 			return
 		}
@@ -208,7 +250,7 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 			return
 		}
 
-		// allow a rate only within its effective date range
+		// validate the rate effective date
 		if rate.EffectiveFrom.After(now) ||
 			(!rate.EffectiveTo.IsZero() && !now.Before(rate.EffectiveTo)) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -218,19 +260,20 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 			return
 		}
 
-		// use the rate master value, not the routing's stored hourly rate
 		hourRate := rate.Rate
 
+		// calculate machining cost
 		machiningCost +=
 			(operation.CycleTimeMinutes / 60) * hourRate
 
+		// allocate setup cost across the batch
 		if operation.SetupTimeMinutes > 0 {
 			setupCostPerPart +=
 				(operation.SetupTimeMinutes * hourRate) /
 					(60 * float64(operation.BatchSize))
 		}
 
-		// save each distinct rate version once
+		// store each rate version once
 		if !seenRates[operation.RateMasterID] {
 			rateSnapshots = append(rateSnapshots, models.RateSnapshot{
 				RateID:   rate.ID,
@@ -310,9 +353,11 @@ func (s *CostingService) CalculateCosting(c *gin.Context) {
 		Scenarios:      scenarios,
 		RateSnapshots:  rateSnapshots,
 		FormulaVersion: "1.2",
-		Assumptions:    "machine hourly rates fetched from effective rate master versions; material rate, scrap rate, overhead rate, packing cost and freight cost supplied in costing request; setup allocated using routing batch size",
-		PreparedBy:     userID,
-		CalculatedAt:   now,
+		Assumptions: "machine hourly rates fetched from effective rate master versions; " +
+			"material rate, scrap rate, overhead rate, packing cost and freight cost " +
+			"supplied in costing request; setup allocated using routing batch size",
+		PreparedBy:   userID,
+		CalculatedAt: now,
 	}
 
 	costing.CreatedAt = now
