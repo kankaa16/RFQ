@@ -18,14 +18,30 @@ func SetupRouter(
 ) *gin.Engine {
 	router := gin.Default()
 
-	// configure cors for the react frontend
-	router.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+	// configure cors for local and deployed react frontends
+	allowedOrigins := map[string]bool{
+		"http://localhost:5173":                 true,
+		"https://client-rho-sage-12.vercel.app": true,
+	}
 
-		if c.Request.Method == "OPTIONS" {
+	router.Use(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+
+		if allowedOrigins[origin] {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set(
+				"Access-Control-Allow-Methods",
+				"GET, POST, PUT, PATCH, DELETE, OPTIONS",
+			)
+			c.Writer.Header().Set(
+				"Access-Control-Allow-Headers",
+				"Origin, Content-Type, Accept, Authorization",
+			)
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
